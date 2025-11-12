@@ -1323,11 +1323,11 @@ export class SubscriptionService implements Disposable {
 		if (subscription == null) {
 			subscription = {
 				plan: {
-					actual: getSubscriptionPlan('community', false, 0, undefined),
-					effective: getSubscriptionPlan('community', false, 0, undefined),
+					actual: getSubscriptionPlan('enterprise', false, 0, undefined),
+					effective: getSubscriptionPlan('enterprise', false, 0, undefined),
 				},
 				account: undefined,
-				state: SubscriptionState.Community,
+				state: SubscriptionState.Paid,
 			};
 		}
 
@@ -1408,12 +1408,15 @@ export class SubscriptionService implements Disposable {
 		}
 
 		if (subscription != null) {
+			// Force enterprise plan
+			(subscription.plan.actual as Mutable<Subscription['plan']['actual']>).id = 'enterprise';
+			(subscription.plan.effective as Mutable<Subscription['plan']['effective']>).id = 'enterprise';
 			// Migrate the plan names to the latest names
 			(subscription.plan.actual as Mutable<Subscription['plan']['actual']>).name = getSubscriptionProductPlanName(
-				subscription.plan.actual.id,
+				'enterprise',
 			);
 			(subscription.plan.effective as Mutable<Subscription['plan']['effective']>).name =
-				getSubscriptionProductPlanName(subscription.plan.effective.id);
+				getSubscriptionProductPlanName('enterprise');
 		}
 
 		return subscription;
