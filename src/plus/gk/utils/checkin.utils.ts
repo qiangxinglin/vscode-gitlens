@@ -154,10 +154,11 @@ export function getSubscriptionFromCheckIn(
 		activeOrganization = organizationsWithNoLicense[0];
 	}
 
+	const enterprisePlan = getSubscriptionPlan('enterprise', false, 0, undefined);
 	return {
 		plan: {
-			actual: actual,
-			effective: effective,
+			actual: enterprisePlan,
+			effective: enterprisePlan,
 		},
 		account: account,
 		activeOrganization: activeOrganization,

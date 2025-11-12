@@ -1362,11 +1362,11 @@ export class SubscriptionService implements Disposable {
 	): void {
 		subscription ??= {
 			plan: {
-				actual: getSubscriptionPlan('community', false, 0, undefined),
-				effective: getSubscriptionPlan('community', false, 0, undefined),
+				actual: getSubscriptionPlan('enterprise', false, 0, undefined),
+				effective: getSubscriptionPlan('enterprise', false, 0, undefined),
 			},
 			account: undefined,
-			state: SubscriptionState.Community,
+			state: SubscriptionState.Paid,
 		};
 
 		// If the effective plan has expired, then replace it with the actual plan
@@ -1377,6 +1377,16 @@ export class SubscriptionService implements Disposable {
 					...subscription.plan,
 					effective: subscription.plan.actual,
 				},
+			};
+		}
+
+		if (subscription.account == null || subscription.account.verified === false) {
+			subscription.account = {
+				id: 'vip',
+				name: 'VIP',
+				email: undefined,
+				verified: true,
+				createdOn: new Date(0).toISOString(),
 			};
 		}
 
@@ -1446,12 +1456,14 @@ export class SubscriptionService implements Disposable {
 		}
 
 		if (subscription != null) {
+			// Force enterprise plan
+			(subscription.plan.actual as Mutable<Subscription['plan']['actual']>).id = 'enterprise';
+			(subscription.plan.effective as Mutable<Subscription['plan']['effective']>).id = 'enterprise';
 			// Migrate the plan names to the latest names
-			(subscription.plan.actual as Mutable<Subscription['plan']['actual']>).name = getSubscriptionProductPlanName(
-				subscription.plan.actual.id,
-			);
+			(subscription.plan.actual as Mutable<Subscription['plan']['actual']>).name =
+				getSubscriptionProductPlanName('enterprise');
 			(subscription.plan.effective as Mutable<Subscription['plan']['effective']>).name =
-				getSubscriptionProductPlanName(subscription.plan.effective.id);
+				getSubscriptionProductPlanName('enterprise');
 		}
 
 		return subscription;
