@@ -252,7 +252,7 @@ export function getCommunitySubscription(subscription?: Subscription): Subscript
 		...subscription,
 		plan: {
 			actual: getSubscriptionPlan(
-				'community',
+				'enterprise',
 				false,
 				0,
 				undefined,
@@ -261,7 +261,7 @@ export function getCommunitySubscription(subscription?: Subscription): Subscript
 					: undefined,
 			),
 			effective: getSubscriptionPlan(
-				'community',
+				'enterprise',
 				false,
 				0,
 				undefined,
@@ -272,6 +272,6 @@ export function getCommunitySubscription(subscription?: Subscription): Subscript
 		},
 		account: undefined,
 		activeOrganization: undefined,
-		state: SubscriptionState.Community,
+		state: SubscriptionState.Paid,
 	};
 }
