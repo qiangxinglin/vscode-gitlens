@@ -9,10 +9,10 @@
 		"vscode": "^1.95.0"
 	},
 	"license": "SEE LICENSE IN LICENSE",
-	"publisher": "eamodio",
+	"publisher": "XQ",
 	"author": {
-		"name": "Eric Amodio",
-		"email": "eamodio@gmail.com"
+		"name": "XQ",
+		"email": "x_q@gmail.com"
 	},
 	"homepage": "https://gitkraken.com/gitlens",
 	"bugs": {
