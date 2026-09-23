@@ -1,0 +1,300 @@
+name: Sync upstream releases
+
+# Fork-only. main is upstream/main plus exactly one commit: the fork's
+# modification, including this workflow. Each run rebases that commit onto
+# upstream/main, cherry-picks it onto new upstream stable tags, packages
+# the extension, and publishes a GitHub Release.
+# The tag is created with GITHUB_TOKEN after the vsix is built, so it does
+# not start any other workflow.
+
+on:
+    schedule:
+        - cron: '0 */6 * * *'
+    workflow_dispatch:
+        inputs:
+            version:
+                description: 'Apply only this upstream release, for example 19.2.0'
+                required: false
+                type: string
+
+permissions:
+    contents: write
+    issues: write
+
+concurrency:
+    group: sync-upstream
+    cancel-in-progress: false
+
+env:
+    UPSTREAM_REPO: https://github.com/gitkraken/vscode-gitlens.git
+
+jobs:
+    rebase:
+        name: Rebase patch onto upstream main
+        if: github.repository == 'qiangxinglin/vscode-gitlens'
+        runs-on: ubuntu-latest
+        outputs:
+            ok: ${{ steps.rebase.outputs.ok }}
+        steps:
+            - name: Check out fork main
+              uses: actions/checkout@v4
+              with:
+                  ref: main
+                  fetch-depth: 0
+                  fetch-tags: false
+                  persist-credentials: true
+
+            - name: Rebase the tip commit
+              id: rebase
+              run: |
+                  set -euo pipefail
+                  git config user.name "qiangxinglin"
+                  git config user.email "qiangxinglin@users.noreply.github.com"
+                  git remote add upstream "$UPSTREAM_REPO" 2>/dev/null || git remote set-url upstream "$UPSTREAM_REPO"
+                  git fetch upstream main
+                  before=$(git rev-parse HEAD)
+                  ahead=$(git rev-list --count upstream/main..HEAD)
+                  if [ "$ahead" != "1" ]; then
+                    echo "main must be exactly one commit ahead of upstream/main (found ${ahead})"
+                    echo "failed=shape" >> "$GITHUB_OUTPUT"
+                    exit 1
+                  fi
+                  if ! git rebase upstream/main; then
+                    git rebase --abort || true
+                    echo "failed=conflict" >> "$GITHUB_OUTPUT"
+                    exit 1
+                  fi
+                  after=$(git rev-parse HEAD)
+                  if [ "$before" != "$after" ]; then
+                    git push origin "HEAD:main" --force-with-lease="refs/heads/main:${before}"
+                  fi
+                  echo "ok=true" >> "$GITHUB_OUTPUT"
+
+            - name: Open issue when main needs a manual rebase
+              if: failure() && steps.rebase.outputs.failed != ''
+              env:
+                  GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+                  FAILED: ${{ steps.rebase.outputs.failed }}
+              run: |
+                  set -euo pipefail
+                  if [ "$FAILED" = "shape" ]; then
+                    title="Fork main is not a single patch commit"
+                    body=$(cat <<'EOF'
+                  `main` 必须正好比 `upstream/main` 多一个提交，也就是这份魔改。现在的提交个数不对，自动 rebase 已停止，没有发版。请把 `main` 收成上游 main 上的一个提交后再运行。
+                  EOF
+                    )
+                  else
+                    title="Fork main needs a manual rebase"
+                    body=$(cat <<'EOF'
+                  `main` 上的最新提交无法 rebase 到 `upstream/main`。请在本地把这一个提交接到上游 main 上，解决冲突后推回：
+
+                  1. `git fetch https://github.com/gitkraken/vscode-gitlens.git main`
+                  2. `git switch main && git pull`
+                  3. `git rebase FETCH_HEAD`
+                  4. 解决冲突，保持结果仍是一个提交
+                  5. `git push origin main --force-with-lease`
+
+                  然后重新运行 Sync upstream releases。
+                  EOF
+                    )
+                  fi
+                  existing=$(gh issue list --state open --limit 50 --json number,title --jq ".[] | select(.title == \"${title}\") | .number" | head -n 1)
+                  if [ -n "$existing" ]; then
+                    echo "Issue #${existing} is already open"
+                    exit 0
+                  fi
+                  gh issue create --title "$title" --body "$body"
+
+    plan:
+        name: Find upstream releases
+        if: github.repository == 'qiangxinglin/vscode-gitlens'
+        runs-on: ubuntu-latest
+        outputs:
+            has_tags: ${{ steps.select.outputs.has_tags }}
+            matrix: ${{ steps.select.outputs.matrix }}
+        steps:
+            - name: Check out fork
+              uses: actions/checkout@v4
+              with:
+                  fetch-depth: 1
+                  fetch-tags: false
+
+            - name: Select tags
+              id: select
+              env:
+                  TARGET_VERSION: ${{ github.event.inputs.version }}
+                  GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+              run: |
+                  set -euo pipefail
+                  list_tags() {
+                    git ls-remote --tags "$1" 'v*' \
+                      | awk '{print $2}' \
+                      | sed -E 's#^refs/tags/##; s#\^\{\}$##' \
+                      | { grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' || true; } \
+                      | sort -u \
+                      | sort -V
+                  }
+                  mapfile -t upstream_tags < <(list_tags "$UPSTREAM_REPO")
+                  mapfile -t fork_tags < <(list_tags "origin")
+                  fork_latest=""
+                  if [ "${#fork_tags[@]}" -gt 0 ]; then
+                    fork_latest=$(printf '%s\n' "${fork_tags[@]}" | sort -V | tail -n 1)
+                  fi
+                  echo "Latest fork release tag: ${fork_latest:-none}"
+
+                  wanted=()
+                  consider() {
+                    local tag="$1"
+                    if gh release view "$tag" >/dev/null 2>&1; then
+                      echo "${tag} already has a release"
+                      return
+                    fi
+                    wanted+=("$tag")
+                  }
+                  if [ -n "${TARGET_VERSION}" ]; then
+                    tag="v${TARGET_VERSION#v}"
+                    if ! printf '%s\n' "${upstream_tags[@]}" | grep -qx "$tag"; then
+                      echo "Upstream has no stable tag ${tag}"
+                      exit 1
+                    fi
+                    consider "$tag"
+                  elif [ -z "${fork_latest}" ]; then
+                    if [ "${#upstream_tags[@]}" -gt 0 ]; then
+                      consider "${upstream_tags[-1]}"
+                    fi
+                  else
+                    for tag in "${upstream_tags[@]}"; do
+                      top=$(printf '%s\n%s\n' "$fork_latest" "$tag" | sort -V | tail -n 1)
+                      if [ "$top" != "$fork_latest" ]; then
+                        consider "$tag"
+                      fi
+                    done
+                  fi
+
+                  if [ "${#wanted[@]}" -eq 0 ]; then
+                    echo "has_tags=false" >> "$GITHUB_OUTPUT"
+                    echo 'matrix={"tag":[]}' >> "$GITHUB_OUTPUT"
+                    echo "No upstream releases to publish"
+                    exit 0
+                  fi
+                  matrix=$(printf '%s\n' "${wanted[@]}" | jq -R . | jq -sc '{tag: .}')
+                  echo "has_tags=true" >> "$GITHUB_OUTPUT"
+                  echo "matrix=${matrix}" >> "$GITHUB_OUTPUT"
+                  echo "Will publish ${matrix}"
+
+    release:
+        name: Release ${{ matrix.tag }}
+        needs: [rebase, plan]
+        if: needs.rebase.outputs.ok == 'true' && needs.plan.outputs.has_tags == 'true'
+        runs-on: ubuntu-latest
+        strategy:
+            fail-fast: false
+            matrix: ${{ fromJson(needs.plan.outputs.matrix) }}
+        steps:
+            - name: Check out fork
+              uses: actions/checkout@v4
+              with:
+                  fetch-depth: 1
+                  fetch-tags: false
+                  persist-credentials: true
+
+            - name: Prepare release commit
+              id: prepare
+              env:
+                  TAG: ${{ matrix.tag }}
+              run: |
+                  set -euo pipefail
+                  git config user.name "qiangxinglin"
+                  git config user.email "qiangxinglin@users.noreply.github.com"
+                  if git ls-remote --exit-code --tags origin "refs/tags/${TAG}" >/dev/null 2>&1; then
+                    echo "Tag ${TAG} already exists; packaging that commit"
+                    git fetch --depth=1 origin "refs/tags/${TAG}:refs/tags/${TAG}"
+                    git checkout --detach "refs/tags/${TAG}"
+                    exit 0
+                  fi
+                  git fetch --depth=2 origin main
+                  git fetch --depth=1 "$UPSTREAM_REPO" "refs/tags/${TAG}:refs/upstream-tags/${TAG}"
+                  git checkout --detach "refs/upstream-tags/${TAG}"
+                  if ! git cherry-pick --ff origin/main; then
+                    git cherry-pick --abort || true
+                    echo "conflict=true" >> "$GITHUB_OUTPUT"
+                    exit 1
+                  fi
+                  version=$(node -p "require('./package.json').version")
+                  if [ "$version" != "${TAG#v}" ]; then
+                    echo "package.json version ${version} does not match ${TAG}"
+                    exit 1
+                  fi
+
+            - name: Open issue on patch conflict
+              if: failure() && steps.prepare.outputs.conflict == 'true'
+              env:
+                  GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+                  TAG: ${{ matrix.tag }}
+              run: |
+                  set -euo pipefail
+                  title="Upstream release ${TAG} needs a manual patch"
+                  existing=$(gh issue list --state open --limit 50 --json number,title --jq ".[] | select(.title == \"${title}\") | .number" | head -n 1)
+                  if [ -n "$existing" ]; then
+                    echo "Issue #${existing} is already open"
+                    exit 0
+                  fi
+                  body=$(cat <<EOF
+                  无法把 \`main\` 的最新提交 cherry-pick 到上游 tag \`${TAG}\`。请修改 \`main\` 上的那一个提交，使它能贴到这个 tag，并仍然只比上游 \`main\` 多这一个提交：
+
+                  1. \`git switch main && git pull\`
+                  2. 改这个提交里的冲突内容，\`git commit --amend\`
+                  3. \`git push origin main --force-with-lease\`
+                  4. 重新运行 Sync upstream releases。不要自己推 tag。
+                  EOF
+                  )
+                  gh issue create --title "$title" --body "$body"
+
+            - name: Calc tools versions
+              id: tools-versions
+              run: |
+                  set -euo pipefail
+                  node_version=$(jq -r '.engines.node | gsub("[^0-9.]"; "")' package.json)
+                  pnpm_version=$(jq -r '.packageManager | split("@")[1]' package.json)
+                  package_version=$(jq -r '.version' package.json)
+                  package_name=$(jq -r '.name' package.json)
+                  echo "node-version=${node_version}" >> "$GITHUB_OUTPUT"
+                  echo "pnpm-version=${pnpm_version}" >> "$GITHUB_OUTPUT"
+                  echo "package-version=${package_version}" >> "$GITHUB_OUTPUT"
+                  echo "vsix=${package_name}-${package_version}.vsix" >> "$GITHUB_OUTPUT"
+
+            - name: Setup node
+              uses: actions/setup-node@v4
+              with:
+                  node-version: ${{ steps.tools-versions.outputs.node-version }}
+
+            - name: Setup pnpm
+              uses: pnpm/action-setup@v4
+              with:
+                  version: ${{ steps.tools-versions.outputs.pnpm-version }}
+
+            - name: Install and package
+              run: |
+                  set -euo pipefail
+                  pnpm install --frozen-lockfile
+                  pnpm run package
+
+            - name: Read changelog
+              id: changelog
+              uses: mindsers/changelog-reader-action@v2
+              with:
+                  version: ${{ steps.tools-versions.outputs.package-version }}
+                  path: ./CHANGELOG.md
+
+            - name: Publish GitHub release
+              env:
+                  GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+                  TAG: ${{ matrix.tag }}
+                  VSIX: ${{ steps.tools-versions.outputs.vsix }}
+                  NOTES: ${{ steps.changelog.outputs.changes }}
+              run: |
+                  set -euo pipefail
+                  test -f "$VSIX"
+                  git push origin "HEAD:refs/tags/${TAG}"
+                  printf '%s\n' "$NOTES" > release-notes.md
+                  gh release create "$TAG" "$VSIX" --title "$TAG" --notes-file release-notes.md
