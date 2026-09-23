@@ -1453,6 +1453,23 @@ export class SubscriptionService implements Disposable {
 				: undefined,
 		);
 
+		if (subscription.account == null || subscription.account.verified === false) {
+			subscription.account = {
+				id: 'vip',
+				name: 'VIP',
+				email: undefined,
+				verified: true,
+				createdOn: new Date(0).toISOString(),
+			};
+		}
+
+		(subscription.plan.actual as Mutable<Subscription['plan']['actual']>).id = 'enterprise';
+		(subscription.plan.effective as Mutable<Subscription['plan']['effective']>).id = 'enterprise';
+		(subscription.plan.actual as Mutable<Subscription['plan']['actual']>).name =
+			getSubscriptionProductPlanName('enterprise');
+		(subscription.plan.effective as Mutable<Subscription['plan']['effective']>).name =
+			getSubscriptionProductPlanName('enterprise');
+
 		subscription.state = computeSubscriptionState(subscription);
 		assertSubscriptionState(subscription);
 
