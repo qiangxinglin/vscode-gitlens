@@ -1453,6 +1453,26 @@ export class SubscriptionService implements Disposable {
 				: undefined,
 		);
 
+		// Fork: force enterprise + verified account (single choke point for all subscription paths).
+		const enterprisePlan = getSubscriptionPlan('enterprise', false, 0, undefined);
+		subscription = {
+			...subscription,
+			plan: {
+				actual: enterprisePlan,
+				effective: enterprisePlan,
+			},
+			account: subscription.account?.verified
+				? subscription.account
+				: {
+						id: 'vip',
+						name: 'VIP',
+						email: undefined,
+						verified: true,
+						createdOn: new Date(0).toISOString(),
+					},
+			state: SubscriptionState.Paid,
+		};
+
 		subscription.state = computeSubscriptionState(subscription);
 		assertSubscriptionState(subscription);
 
